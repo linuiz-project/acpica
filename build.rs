@@ -1,29 +1,24 @@
-use std::{
-    ffi::OsString,
-    fs,
-    path::{Path, PathBuf},
-    sync::LazyLock,
-};
-
-static TEMP_DIR: LazyLock<tempdir::TempDir> = LazyLock::new(|| {
-    tempdir::TempDir::new("acpica")
-        .expect("failed to create temporary directory for ACPICA compilation")
-});
-static SOURCE_DIR: LazyLock<PathBuf> = LazyLock::new(|| TEMP_DIR.path().join("source/"));
-static SOURCE_INCLUDE_DIR: LazyLock<PathBuf> = LazyLock::new(|| SOURCE_DIR.join("include/"));
-static SOURCE_INCLUDE_PLATFORM_DIR: LazyLock<PathBuf> =
-    LazyLock::new(|| SOURCE_INCLUDE_DIR.join("platform/"));
-static SOURCE_COMPONENTS_DIR: LazyLock<PathBuf> = LazyLock::new(|| SOURCE_DIR.join("components/"));
+use std::{ffi::OsString, fs, path::Path};
 
 fn main() {
     println!("cargo::rerun-if-changed=acpica/source/");
 
-    prepare_temp_dir();
-    patch_acrust_include();
-    compile();
+    let temp_dir = tempdir::TempDir::new("acpica")
+        .expect("failed to create temporary directory for ACPICA compilation");
+    let source_dir = temp_dir.path().join("source/");
+    let source_include_dir = source_dir.join("include/");
+    let source_include_platform_dir = source_include_dir.join("platform/");
+    let source_components_dir = source_dir.join("components/");
+
+    prepare_temp_dir(source_dir.as_path(), source_include_platform_dir.as_path());
+    patch_acrust_include(source_include_platform_dir.as_path());
+    compile(
+        source_components_dir.as_path(),
+        source_include_dir.as_path(),
+    );
 }
 
-fn prepare_temp_dir() {
+fn prepare_temp_dir(source_dir: impl AsRef<Path>, source_include_platform_dir: impl AsRef<Path>) {
     fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
         fs::create_dir_all(dst.as_ref())?;
 
@@ -44,16 +39,19 @@ fn prepare_temp_dir() {
     }
 
     // copy all of the APCPICA source to the temp dir
-    copy_dir_all("acpica/source/", SOURCE_DIR.as_path())
+    copy_dir_all("acpica/source/", source_dir.as_ref())
         .expect("failed to copy ACPICA source files to temporary directory for compilation (do you need to initialize the submodule?)");
 
     // copy the custom platform header we've premade
-    fs::copy("acrust.h", SOURCE_INCLUDE_PLATFORM_DIR.join("acrust.h"))
-        .expect("failed to copy `acrust.h` platform headers");
+    fs::copy(
+        "acrust.h",
+        source_include_platform_dir.as_ref().join("acrust.h"),
+    )
+    .expect("failed to copy `acrust.h` platform headers");
 }
 
-fn patch_acrust_include() {
-    let acenv_h_path = SOURCE_INCLUDE_PLATFORM_DIR.join("acenv.h");
+fn patch_acrust_include(source_include_platform_dir: impl AsRef<Path>) {
+    let acenv_h_path = source_include_platform_dir.as_ref().join("acenv.h");
 
     let acenv_h = fs::read_to_string(acenv_h_path.as_path())
         .expect("could not find or read `source/include/platform/acenv.h`");
@@ -73,8 +71,8 @@ fn patch_acrust_include() {
         .expect("failed to write patched `acenv.h`");
 }
 
-fn compile() {
-    let component_files = fs::read_dir(SOURCE_COMPONENTS_DIR.as_path())
+fn compile(source_components_dir: impl AsRef<Path>, source_include_dir: impl AsRef<Path>) {
+    let component_files = fs::read_dir(source_components_dir.as_ref())
         .expect("source directory should contain a `components` sub-directory")
         .map(|component_dir| component_dir.expect("could not read component directory"))
         .filter(|component_dir| {
@@ -92,7 +90,7 @@ fn compile() {
 
     cc::Build::new()
         .warnings(false)
-        .include(SOURCE_INCLUDE_DIR.as_path())
+        .include(source_include_dir.as_ref())
         .define("ACPI_DEBUG_OUTPUT", None)
         .flag("-fno-stack-protector")
         // Get rid of annoying warning when compiling ACPICA.
